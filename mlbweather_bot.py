@@ -9,7 +9,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# === MLB STADIUMS (same as before) ===
+# === MLB STADIUMS ===
 STADIUMS = {
     "los angeles angels": {"team": "Los Angeles Angels", "stadium": "Angel Stadium", "lat": 33.799572, "lon": -117.889031},
     "arizona diamondbacks": {"team": "Arizona Diamondbacks", "stadium": "Chase Field", "lat": 33.452922, "lon": -112.038669},
@@ -95,10 +95,7 @@ def get_todays_games():
                     away = game["teams"]["away"]["team"]["name"]
                     home = game["teams"]["home"]["team"]["name"]
                     start_time = game.get("gameDate", "")
-                    if "T" in start_time:
-                        start_str = start_time.split("T")[1][:5]
-                    else:
-                        start_str = "TBD"
+                    start_str = start_time.split("T")[1][:5] if "T" in start_time else "TBD"
                     weather = get_weather(home)
                     if weather:
                         games.append({
@@ -138,7 +135,11 @@ async def daily_report():
         if not games:
             await channel.send(f"🌤️ **MLB Daily Weather Report — {date_str}**\nNo games scheduled today. Enjoy the off day! ⚾")
             return
-        embed = discord.Embed(title=f"🗞️ MLB Game Day Weather Report — {date_str}", description="Morning conditions • Wind impact noted", color=0x00ff88)
+        embed = discord.Embed(
+            title=f"🗞️ MLB Game Day Weather Report — {date_str}",
+            description="Morning conditions • Wind impact noted",
+            color=0x00ff88
+        )
         for g in games:
             w = g["weather"]
             wind_note = get_wind_impact(w["wind_speed"], w["wind_dir"])
@@ -153,7 +154,6 @@ async def daily_report():
 @tree.command(name="mlbweather", description="Manual weather for any team")
 @app_commands.describe(team="Team name (e.g. Phillies, Yankees)")
 async def mlbweather(interaction: discord.Interaction, team: str):
-    # Defer IMMEDIATELY - this is the key fix
     await interaction.response.defer()
     weather = get_weather(team)
     if not weather:
@@ -170,4 +170,20 @@ async def mlbweather(interaction: discord.Interaction, team: str):
 
 @tree.command(name="listteams", description="List all supported MLB teams")
 async def listteams(interaction: discord.Interaction):
-    await interaction.response.send_message(f"**Supported Teams:**\n" + "\n".join([f"• {info['team']}" for info in STADI
+    team_list = "\n".join([f"• {info['team']}" for info in STADIUMS.values()])
+    await interaction.response.send_message(f"**Supported Teams:**\n{team_list}", ephemeral=True)
+
+@client.event
+async def on_ready():
+    await tree.sync()
+    if CHANNEL_ID != 0:
+        daily_report.start()
+        print("✅ Daily morning report scheduled for 8:00 AM ET")
+    print(f"✅ MLB Weather Bot is online as {client.user} — Newspaper mode active!")
+
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        print("❌ DISCORD_TOKEN missing!")
+        exit(1)
+    client.run(token)
