@@ -9,7 +9,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# === MLB STADIUMS ===
+# === MLB STADIUMS (same as before) ===
 STADIUMS = {
     "los angeles angels": {"team": "Los Angeles Angels", "stadium": "Angel Stadium", "lat": 33.799572, "lon": -117.889031},
     "arizona diamondbacks": {"team": "Arizona Diamondbacks", "stadium": "Chase Field", "lat": 33.452922, "lon": -112.038669},
@@ -58,25 +58,28 @@ def get_weather(team_input):
             return None
     data = STADIUMS[key]
     url = f"https://api.open-meteo.com/v1/forecast?latitude={data['lat']}&longitude={data['lon']}&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=auto&temperature_unit=fahrenheit&wind_speed_unit=mph"
-    resp = requests.get(url)
-    if resp.status_code != 200:
+    try:
+        resp = requests.get(url, timeout=8)
+        if resp.status_code != 200:
+            return None
+        current = resp.json()["current"]
+        codes = {0: "☀️ Clear sky", 1: "🌤️ Mainly clear", 2: "⛅ Partly cloudy", 3: "☁️ Overcast", 45: "🌫️ Fog", 61: "🌧️ Light rain", 63: "🌧️ Moderate rain", 65: "🌧️ Heavy rain", 71: "❄️ Light snow", 95: "⛈️ Thunderstorm"}
+        condition = codes.get(current.get("weather_code"), "🌥️ Unknown")
+        wind_dir = get_cardinal(current.get("wind_direction_10m", 0))
+        return {
+            "team": data["team"], "stadium": data["stadium"],
+            "temp": round(current.get("temperature_2m", 0)),
+            "feels_like": round(current.get("apparent_temperature", 0)),
+            "humidity": current.get("relative_humidity_2m", 0),
+            "precip": current.get("precipitation", 0),
+            "condition": condition,
+            "wind_speed": round(current.get("wind_speed_10m", 0)),
+            "wind_dir": wind_dir,
+            "wind_gusts": round(current.get("wind_gusts_10m", 0)),
+            "cloud": current.get("cloud_cover", 0)
+        }
+    except:
         return None
-    current = resp.json()["current"]
-    codes = {0: "☀️ Clear sky", 1: "🌤️ Mainly clear", 2: "⛅ Partly cloudy", 3: "☁️ Overcast", 45: "🌫️ Fog", 61: "🌧️ Light rain", 63: "🌧️ Moderate rain", 65: "🌧️ Heavy rain", 71: "❄️ Light snow", 95: "⛈️ Thunderstorm"}
-    condition = codes.get(current.get("weather_code"), "🌥️ Unknown")
-    wind_dir = get_cardinal(current.get("wind_direction_10m", 0))
-    return {
-        "team": data["team"], "stadium": data["stadium"],
-        "temp": round(current.get("temperature_2m", 0)),
-        "feels_like": round(current.get("apparent_temperature", 0)),
-        "humidity": current.get("relative_humidity_2m", 0),
-        "precip": current.get("precipitation", 0),
-        "condition": condition,
-        "wind_speed": round(current.get("wind_speed_10m", 0)),
-        "wind_dir": wind_dir,
-        "wind_gusts": round(current.get("wind_gusts_10m", 0)),
-        "cloud": current.get("cloud_cover", 0)
-    }
 
 def get_todays_games():
     today = datetime.date.today().isoformat()
@@ -92,13 +95,12 @@ def get_todays_games():
                     away = game["teams"]["away"]["team"]["name"]
                     home = game["teams"]["home"]["team"]["name"]
                     start_time = game.get("gameDate", "")
+                    if "T" in start_time:
+                        start_str = start_time.split("T")[1][:5]
+                    else:
+                        start_str = "TBD"
                     weather = get_weather(home)
                     if weather:
-                        if "T" in start_time:
-                            time_part = start_time.split("T")[1][:5]
-                            start_str = time_part
-                        else:
-                            start_str = "TBD"
                         games.append({
                             "away": away,
                             "home": home,
@@ -121,49 +123,37 @@ def get_wind_impact(wind_speed, wind_dir):
     else:
         return f"🌬️ Cross wind — {speed} mph {wind_dir} (mixed impact)"
 
-# === DAILY REPORT CHANNEL ===
+# === DAILY REPORT ===
 CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 
 @tasks.loop(minutes=1)
 async def daily_report():
     now = datetime.datetime.now(datetime.timezone.utc)
-    if now.hour == 12 and now.minute == 0:  # 8:00 AM Eastern Time
+    if now.hour == 12 and now.minute == 0:   # 8:00 AM Eastern
         channel = client.get_channel(CHANNEL_ID)
         if not channel:
-            print("⚠️ Daily channel not set correctly!")
             return
-        
         games = get_todays_games()
         date_str = datetime.date.today().strftime("%B %d, %Y")
-        
         if not games:
             await channel.send(f"🌤️ **MLB Daily Weather Report — {date_str}**\nNo games scheduled today. Enjoy the off day! ⚾")
             return
-        
-        embed = discord.Embed(
-            title=f"🗞️ MLB Game Day Weather Report — {date_str}",
-            description="Morning conditions for today's games • Wind impact noted",
-            color=0x00ff88
-        )
-        
+        embed = discord.Embed(title=f"🗞️ MLB Game Day Weather Report — {date_str}", description="Morning conditions • Wind impact noted", color=0x00ff88)
         for g in games:
             w = g["weather"]
             wind_note = get_wind_impact(w["wind_speed"], w["wind_dir"])
             embed.add_field(
                 name=f"{g['away']} @ {g['home']} • {g['start']} ET",
-                value=f"**{g['stadium']}**\n{w['condition']} | {w['temp']}°F (feels {w['feels_like']}°F)\n"
-                      f"{wind_note}\n"
-                      f"Humidity: {w['humidity']}% • Precip: {w['precip']} mm",
+                value=f"**{g['stadium']}**\n{w['condition']} | {w['temp']}°F (feels {w['feels_like']}°F)\n{wind_note}\nHumidity: {w['humidity']}% • Precip: {w['precip']} mm",
                 inline=False
             )
-        
-        embed.set_footer(text="Auto-delivered every morning • Open-Meteo + MLB Stats API • Your personal baseball newspaper")
+        embed.set_footer(text="Auto-delivered every morning • Open-Meteo + MLB Stats API")
         await channel.send(embed=embed)
-        print(f"✅ Daily report posted for {date_str}")
 
 @tree.command(name="mlbweather", description="Manual weather for any team")
 @app_commands.describe(team="Team name (e.g. Phillies, Yankees)")
 async def mlbweather(interaction: discord.Interaction, team: str):
+    # Defer IMMEDIATELY - this is the key fix
     await interaction.response.defer()
     weather = get_weather(team)
     if not weather:
@@ -180,20 +170,4 @@ async def mlbweather(interaction: discord.Interaction, team: str):
 
 @tree.command(name="listteams", description="List all supported MLB teams")
 async def listteams(interaction: discord.Interaction):
-    teams = "\n".join([f"• {info['team']}" for info in STADIUMS.values()])
-    await interaction.response.send_message(f"**Supported Teams:**\n{teams}", ephemeral=True)
-
-@client.event
-async def on_ready():
-    await tree.sync()
-    if CHANNEL_ID != 0:
-        daily_report.start()
-        print("✅ Daily morning report scheduled for 8:00 AM ET")
-    print(f"✅ MLB Weather Bot is online as {client.user} — Newspaper mode active!")
-
-if __name__ == "__main__":
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        print("❌ DISCORD_TOKEN missing!")
-        exit(1)
-    client.run(token)
+    await interaction.response.send_message(f"**Supported Teams:**\n" + "\n".join([f"• {info['team']}" for info in STADI
