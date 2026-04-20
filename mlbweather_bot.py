@@ -3,12 +3,13 @@ from discord import app_commands
 import requests
 import os
 import datetime
+from discord.ext import tasks
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# MLB Stadiums
+# === MLB STADIUMS ===
 STADIUMS = {
     "los angeles angels": {"team": "Los Angeles Angels", "stadium": "Angel Stadium", "lat": 33.799572, "lon": -117.889031},
     "arizona diamondbacks": {"team": "Arizona Diamondbacks", "stadium": "Chase Field", "lat": 33.452922, "lon": -112.038669},
@@ -61,8 +62,8 @@ def get_weather(team_input):
     if resp.status_code != 200:
         return None
     current = resp.json()["current"]
-    codes = {0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Depositing rime fog", 51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle", 61: "Light rain", 63: "Moderate rain", 65: "Heavy rain", 71: "Light snow", 73: "Moderate snow", 75: "Heavy snow", 95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with heavy hail"}
-    condition = codes.get(current.get("weather_code"), "Unknown")
+    codes = {0: "☀️ Clear sky", 1: "🌤️ Mainly clear", 2: "⛅ Partly cloudy", 3: "☁️ Overcast", 45: "🌫️ Fog", 61: "🌧️ Light rain", 63: "🌧️ Moderate rain", 65: "🌧️ Heavy rain", 71: "❄️ Light snow", 95: "⛈️ Thunderstorm"}
+    condition = codes.get(current.get("weather_code"), "🌥️ Unknown")
     wind_dir = get_cardinal(current.get("wind_direction_10m", 0))
     return {
         "team": data["team"], "stadium": data["stadium"],
@@ -77,7 +78,90 @@ def get_weather(team_input):
         "cloud": current.get("cloud_cover", 0)
     }
 
-@tree.command(name="mlbweather", description="Get current weather for a team")
+def get_todays_games():
+    today = datetime.date.today().isoformat()
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}"
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        games = []
+        for date_data in resp.json().get("dates", []):
+            for game in date_data.get("games", []):
+                if game["status"]["abstractGameState"] in ["Preview", "Live", "Final"]:
+                    away = game["teams"]["away"]["team"]["name"]
+                    home = game["teams"]["home"]["team"]["name"]
+                    start_time = game.get("gameDate", "")
+                    weather = get_weather(home)
+                    if weather:
+                        if "T" in start_time:
+                            time_part = start_time.split("T")[1][:5]
+                            start_str = time_part
+                        else:
+                            start_str = "TBD"
+                        games.append({
+                            "away": away,
+                            "home": home,
+                            "stadium": weather["stadium"],
+                            "start": start_str,
+                            "weather": weather
+                        })
+        return games
+    except:
+        return []
+
+def get_wind_impact(wind_speed, wind_dir):
+    speed = wind_speed
+    if speed < 5:
+        return "🟡 Light wind — neutral day"
+    if any(d in wind_dir for d in ["W", "NW", "SW", "S", "SSW"]):
+        return f"🌬️ **Blowing OUT** → favors hitters (fly balls carry farther) — {speed} mph {wind_dir}"
+    elif any(d in wind_dir for d in ["E", "NE", "SE", "N", "NNE"]):
+        return f"🌬️ **Blowing IN** → favors pitchers — {speed} mph {wind_dir}"
+    else:
+        return f"🌬️ Cross wind — {speed} mph {wind_dir} (mixed impact)"
+
+# === DAILY REPORT CHANNEL ===
+CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
+
+@tasks.loop(minutes=1)
+async def daily_report():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if now.hour == 12 and now.minute == 0:  # 8:00 AM Eastern Time
+        channel = client.get_channel(CHANNEL_ID)
+        if not channel:
+            print("⚠️ Daily channel not set correctly!")
+            return
+        
+        games = get_todays_games()
+        date_str = datetime.date.today().strftime("%B %d, %Y")
+        
+        if not games:
+            await channel.send(f"🌤️ **MLB Daily Weather Report — {date_str}**\nNo games scheduled today. Enjoy the off day! ⚾")
+            return
+        
+        embed = discord.Embed(
+            title=f"🗞️ MLB Game Day Weather Report — {date_str}",
+            description="Morning conditions for today's games • Wind impact noted",
+            color=0x00ff88
+        )
+        
+        for g in games:
+            w = g["weather"]
+            wind_note = get_wind_impact(w["wind_speed"], w["wind_dir"])
+            embed.add_field(
+                name=f"{g['away']} @ {g['home']} • {g['start']} ET",
+                value=f"**{g['stadium']}**\n{w['condition']} | {w['temp']}°F (feels {w['feels_like']}°F)\n"
+                      f"{wind_note}\n"
+                      f"Humidity: {w['humidity']}% • Precip: {w['precip']} mm",
+                inline=False
+            )
+        
+        embed.set_footer(text="Auto-delivered every morning • Open-Meteo + MLB Stats API • Your personal baseball newspaper")
+        await channel.send(embed=embed)
+        print(f"✅ Daily report posted for {date_str}")
+
+@tree.command(name="mlbweather", description="Manual weather for any team")
 @app_commands.describe(team="Team name (e.g. Phillies, Yankees)")
 async def mlbweather(interaction: discord.Interaction, team: str):
     await interaction.response.defer()
@@ -85,7 +169,7 @@ async def mlbweather(interaction: discord.Interaction, team: str):
     if not weather:
         await interaction.followup.send("❌ Team not found. Try `/listteams`")
         return
-    embed = discord.Embed(title=f"🌤️ {weather['team']} @ {weather['stadium']}", description=f"**{weather['condition']}**", color=0x00ff00)
+    embed = discord.Embed(title=f"🌤️ {weather['team']} @ {weather['stadium']}", description=weather['condition'], color=0x00ff88)
     embed.add_field(name="Temperature", value=f"{weather['temp']}°F (feels {weather['feels_like']}°F)", inline=True)
     embed.add_field(name="Humidity", value=f"{weather['humidity']}%", inline=True)
     embed.add_field(name="Precipitation", value=f"{weather['precip']} mm", inline=True)
@@ -94,7 +178,7 @@ async def mlbweather(interaction: discord.Interaction, team: str):
     embed.set_footer(text="Open-Meteo • Real-time")
     await interaction.followup.send(embed=embed)
 
-@tree.command(name="listteams", description="List all MLB teams")
+@tree.command(name="listteams", description="List all supported MLB teams")
 async def listteams(interaction: discord.Interaction):
     teams = "\n".join([f"• {info['team']}" for info in STADIUMS.values()])
     await interaction.response.send_message(f"**Supported Teams:**\n{teams}", ephemeral=True)
@@ -102,11 +186,14 @@ async def listteams(interaction: discord.Interaction):
 @client.event
 async def on_ready():
     await tree.sync()
-    print(f"✅ MLB Weather Bot is online as {client.user}")
+    if CHANNEL_ID != 0:
+        daily_report.start()
+        print("✅ Daily morning report scheduled for 8:00 AM ET")
+    print(f"✅ MLB Weather Bot is online as {client.user} — Newspaper mode active!")
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        print("❌ DISCORD_TOKEN missing in Railway Variables!")
+        print("❌ DISCORD_TOKEN missing!")
         exit(1)
     client.run(token)
