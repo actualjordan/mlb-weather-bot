@@ -3,13 +3,12 @@ from discord import app_commands
 import requests
 import os
 import datetime
-from discord.ext import tasks
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# === MLB STADIUMS ===
+# MLB Stadiums
 STADIUMS = {
     "los angeles angels": {"team": "Los Angeles Angels", "stadium": "Angel Stadium", "lat": 33.799572, "lon": -117.889031},
     "arizona diamondbacks": {"team": "Arizona Diamondbacks", "stadium": "Chase Field", "lat": 33.452922, "lon": -112.038669},
@@ -78,21 +77,6 @@ def get_weather(team_input):
         "cloud": current.get("cloud_cover", 0)
     }
 
-# === DAILY REPORT ===
-CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
-
-@tasks.loop(minutes=1)
-async def daily_report():
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if now.hour == 12 and now.minute == 0:   # 8:00 AM Eastern (12:00 UTC during EDT)
-        channel = client.get_channel(CHANNEL_ID)
-        if not channel:
-            print(f"⚠️ Channel ID {CHANNEL_ID} not found!")
-            return
-        # For now, just post a test message so we know it's working
-        await channel.send(f"🌤️ **MLB Daily Weather Report** — {datetime.date.today().strftime('%B %d, %Y')}\n\nBot is running! Full game-day report coming soon.")
-        print("✅ Test daily report sent!")
-
 @tree.command(name="mlbweather", description="Get current weather for a team")
 @app_commands.describe(team="Team name (e.g. Phillies, Yankees)")
 async def mlbweather(interaction: discord.Interaction, team: str):
@@ -118,13 +102,11 @@ async def listteams(interaction: discord.Interaction):
 @client.event
 async def on_ready():
     await tree.sync()
-    if CHANNEL_ID != 0:
-        daily_report.start()
-    print(f"✅ Bot is online as {client.user} — Daily report enabled!")
+    print(f"✅ MLB Weather Bot is online as {client.user}")
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
-    if not token or token == "PASTE_YOUR_TOKEN_HERE":
-        print("❌ DISCORD_TOKEN is missing!")
-        return
+    if not token:
+        print("❌ DISCORD_TOKEN missing in Railway Variables!")
+        exit(1)
     client.run(token)
